@@ -2,27 +2,23 @@
 
 * [Original Repo](https://github.com/yanpanlau/Keras-FlappyBird)
 
-# Dependencies:
+# Dependencies
 
 * Keras
 * pygame
 * scikit-image
 * h5py
-
-# How to Run?
-
-**CPU only**
+# Training
 
 ```
-python qlearn.py -m "Run"
+python main.py -m "Train"
 ```
 
-**GPU version (Theano)**
+
+# Running
 
 ```
-THEANO_FLAGS=device=gpu,floatX=float32,lib.cnmem=0.2 python qlearn.py -m "Run"
+python main.py -m "Run"
 ```
 
-**Train**
 
-Everything as before, the argument is "Train" instead of "Run".
