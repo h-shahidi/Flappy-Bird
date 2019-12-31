@@ -18,10 +18,12 @@ from keras import initializers
 from keras.initializers import normal, identity
 from keras.models import model_from_json
 from keras.models import Sequential
+from keras.models import clone_model
 from keras.layers.core import Dense, Dropout, Activation, Flatten
 from keras.layers.convolutional import Convolution2D, MaxPooling2D
 from keras.optimizers import SGD , Adam
 import tensorflow as tf
+from copy import deepcopy
 
 import os
 import datetime # for logging timestamp
@@ -38,12 +40,12 @@ REPLAY_MEMORY = 50000 # number of previous transitions to remember
 BATCH = 32 # size of minibatch
 FRAME_PER_ACTION = 1
 LEARNING_RATE = 1e-4
+TARGET_UPDATE = 4000
 
 img_rows , img_cols = 80, 80
 #Convert image into Black and white
 img_channels = 4 #We stack 4 frames
 
-# https://stackoverflow.com/questions/17866724/python-logging-print-statements-while-having-them-print-to-stdout
 class Tee(object):
     def __init__(self, *files):
         self.files = files
@@ -70,16 +72,13 @@ def buildmodel():
     print("We finish building the model")
     return model
 
-def trainNetwork(model,args):
-    SAME_LINE = False
-    # open up a game state to communicate with emulator
-
+def trainNetwork(model, args):
     log_file_name = datetime.datetime.now().strftime("log_%Y_%m_%d_%H_%M_%S.txt")
     log_file = open(log_file_name, "w")
     backup = sys.stdout
     sys.stdout = Tee(sys.stdout, log_file)
     
-
+    # open up a game state to communicate with emulator
     game_state = game.GameState()
 
     # store the previous observations in replay memory
@@ -95,12 +94,14 @@ def trainNetwork(model,args):
     x_t = skimage.exposure.rescale_intensity(x_t,out_range=(0,255))
 
     s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
-    #print (s_t.shape)
 
     #In Keras, need to reshape
-    s_t = s_t.reshape(1, s_t.shape[0], s_t.shape[1], s_t.shape[2])  #1*80*80*4
+    s_t = s_t.reshape(1, s_t.shape[0], s_t.shape[1], s_t.shape[2])  #shape(1,80,80,4) 
 
-    
+    #Create target network
+    if args['training_algorithm'] == "doubleDQN":
+        target_model = clone_model(model)
+        target_model.set_weights(model.get_weights())
 
     if args['mode'] == 'Run':
         OBSERVE = 999999999    #We keep observe, never train
@@ -160,11 +161,9 @@ def trainNetwork(model,args):
             #sample a minibatch to train on
             minibatch = random.sample(D, BATCH)
 
-
-
-            inputs = np.zeros((BATCH, s_t.shape[1], s_t.shape[2], s_t.shape[3]))   #32, 80, 80, 4
+            inputs = np.zeros((BATCH, s_t.shape[1], s_t.shape[2], s_t.shape[3]))   #shape(32, 80, 80, 4)
             print (inputs.shape)
-            targets = np.zeros((inputs.shape[0], ACTIONS))                         #32, 2
+            targets = np.zeros((inputs.shape[0], ACTIONS))                         #shape(32, 2)
 
             #Now we do the experience replay
             for i in range(0, len(minibatch)):
@@ -173,23 +172,29 @@ def trainNetwork(model,args):
                 reward_t = minibatch[i][2]
                 state_t1 = minibatch[i][3]
                 terminal = minibatch[i][4]
-                # if terminated, only equals reward
 
-                inputs[i:i + 1] = state_t    #I saved down s_t
-
-                targets[i] = model.predict(state_t)  # Hitting each buttom probability
-                Q_sa = model.predict(state_t1)
+                inputs[i:i + 1] = state_t  #I saved down s_t
+                targets[i] = model.predict(state_t)  #Hitting each buttom probability
 
                 if terminal:
                     targets[i, action_t] = reward_t
                 else:
-                    targets[i, action_t] = reward_t + GAMMA * np.max(Q_sa)
+                    Q_sa = model.predict(state_t1)
+                    if args['training_algorithm'] == "DQN":
+                        targets[i, action_t] = reward_t + GAMMA * np.max(Q_sa)
+                    elif args['training_algorithm'] == "doubleDQN":
+                        Q_target = target_model.predict(state_t1)
+                        maxQ_ind = np.argmax(Q_sa,axis = 1)
+                        targets[i, action_t] = reward_t + GAMMA * Q_target[0][maxQ_ind]
 
-            # targets2 = normalize(targets)
             loss += model.train_on_batch(inputs, targets)
 
         s_t = s_t1
         t = t + 1
+
+        if args['training_algorithm'] == "doubleDQN" and t % TARGET_UPDATE == 0 :
+            print("Copy to target model----------------------------")
+            target_model.set_weights(model.get_weights())
 
         # save progress every 10000 iterations
         if t % 1000 == 0:
@@ -209,28 +214,16 @@ def trainNetwork(model,args):
 
         printInfo(t, state, epsilon, action_index, r_t, Q_sa, loss)
 
-        if not SAME_LINE:
-            score_file = open("scores","aw") 
-            score_file.write(str(curr_score)+"\n")
-            score_file.close()
-            SAME_LINE = True
-        else:
-            score_file = open("scores","r")
-            score_file_lines = score_file.readlines()[:-1]
-            score_file.close()
-            score_file = open("scores","w")
-            score_file.writelines(score_file_lines)
-            score_file.write(str(curr_score)+"\n")
-            score_file.close()
-
+        score_file = open("scores","a") 
+        score_file.write(str(curr_score)+"\n")
+        score_file.close()
 
         if terminal_check:
             print("Total rewards: ", total_reward) 
-            out_file = open("total_reward","aw") 
+            out_file = open("total_reward","a") 
             out_file.write(str(total_reward)+"\n")
             out_file.close()
             total_reward = 0
-            SAME_LINE = False
         else:
             total_reward = total_reward + r_t
 
@@ -244,11 +237,12 @@ def printInfo(t, state, epsilon, action_index, r_t, Q_sa, loss):
 
 def playGame(args):
     model = buildmodel()
-    trainNetwork(model,args)
+    trainNetwork(model, args)
 
 def main():
     parser = argparse.ArgumentParser(description='Description of your program')
     parser.add_argument('-m','--mode', help='Train / Run', required=True)
+    parser.add_argument('--training_algorithm', help='What training algorithm to be used for training (e.g., DQN, doubleDQN)', required=True)
     args = vars(parser.parse_args())
     playGame(args)
 
