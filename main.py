@@ -76,7 +76,7 @@ def buildmodel(bootstrap_head = None):
     print("We finish building the model")
     return model
 
-def trainNetwork(model, args):
+def startIteration(model, args):
     log_file_name = datetime.datetime.now().strftime("log_%Y_%m_%d_%H_%M_%S.txt")
     log_file = open(log_file_name, "w")
     backup = sys.stdout
@@ -111,11 +111,11 @@ def trainNetwork(model, args):
         target_model = clone_model(model)
         target_model.set_weights(model.get_weights())
 
-    if args['mode'] == 'Run':
+    if args['mode'] == 'run':
         OBSERVE = 999999999    #We keep observe, never train
         epsilon = FINAL_EPSILON
         print ("Now we load weights")
-        if args['training_algorithm'] == "bootstrappedDQN":
+        if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
             for i in range(BOOTSTRAP_K):
                 if os.path.isfile("model_%d.h5" % (i)):
                     model[i].load_weights("model_%d.h5" % (i))
@@ -138,12 +138,12 @@ def trainNetwork(model, args):
         a_t = np.zeros([ACTIONS])
         
         if t % FRAME_PER_ACTION == 0:
-            if args['training_algorithm'] == "bootstrappedDQN":
+            if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
                 chosen = np.random.randint(BOOTSTRAP_K)
                 q = model[chosen].predict(s_t)
                 max_Q = np.argmax(q)
                 action_index = max_Q
-                a_t[action_index] = 1 
+                a_t[action_index] = 1
             else:            
                 #choose an action epsilon greedy
                 if random.random() <= epsilon:
@@ -155,7 +155,7 @@ def trainNetwork(model, args):
                     max_Q = np.argmax(q)
                     action_index = max_Q
                     a_t[action_index] = 1
-                Nt[action_index] += 1
+            Nt[action_index] += 1
 
         #We reduced the epsilon gradually
         if epsilon > FINAL_EPSILON and t > OBSERVE:
@@ -178,7 +178,7 @@ def trainNetwork(model, args):
         mask = np.random.choice(2, BOOTSTRAP_K, p=[0.5,]*2)
 
         # store the transition in D
-        if args['training_algorithm'] == "bootstrappedDQN":
+        if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
             D.append((s_t, action_index, r_t, s_t1, terminal, mask))
         else:
             D.append((s_t, action_index, r_t, s_t1, terminal))
@@ -201,13 +201,13 @@ def trainNetwork(model, args):
                 reward_t = minibatch[i][2]
                 state_t1 = minibatch[i][3]
                 terminal = minibatch[i][4]
-                if args['training_algorithm'] == "bootstrappedDQN":
+                if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
                     mask = minibatch[i][5]
                 
 
                 inputs[i:i + 1] = state_t  #I saved down s_t
                 #Hitting each buttom probability
-                if args['training_algorithm'] == "bootstrappedDQN":
+                if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
                     targets[i] = models[chosen].predict(state_t)
                 else:
                     targets[i] = model.predict(state_t) 
@@ -231,8 +231,12 @@ def trainNetwork(model, args):
                     elif args['training_algorithm'] == "bootstrappedDQN":
                         Q_sa = model[chosen].predict(state_t1)
                         targets[i, action_t] = reward_t + GAMMA * np.max(Q_sa)
+                    elif args['training_algorithm'] == "bootstrappedDQN+UCB":
+                        Q_sa = model[chosen].predict(state_t1)
+                        modified_Q_sa = Q_sa+np.sqrt(2*np.log(t)/(Nt))
+                        targets[i, action_t] = reward_t + GAMMA * np.max(modified_Q_sa)
 
-            if args['training_algorithm'] == "bootstrappedDQN":
+            if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
                 for idx in range(BOOTSTRAP_K):
                     if mask[idx] == 1:
                         loss += model[idx].train_on_batch(inputs, targets)
@@ -243,13 +247,13 @@ def trainNetwork(model, args):
         t = t + 1
 
         if args['training_algorithm'] == "doubleDQN" and t % TARGET_UPDATE == 0 :
-            print("Copy to target model----------------------------")
+            print("----------------------------Copy to target model----------------------------")
             target_model.set_weights(model.get_weights())
 
         # save progress every 10000 iterations
         if t % 1000 == 0:
             print("Now we save model")
-            if args['training_algorithm'] == "bootstrappedDQN":
+            if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
                 for i in range(BOOTSTRAP_K):
                     model[i].save_weights("model_%d.h5" % (i), overwrite=True)
                     with open("model_%d.json" % (i), "w") as outfile:
@@ -292,17 +296,23 @@ def printInfo(t, state, action_index, r_t, Q_sa, loss):
           "/ Q_MAX " , np.max(Q_sa), "/ Loss ", loss)
 
 def playGame(args):
-    if args['training_algorithm'] == "bootstrappedDQN":
+    if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
         model = [buildmodel(i) for i in range(BOOTSTRAP_K)]
     else:
         model = buildmodel()
-    trainNetwork(model, args)
+    startIteration(model, args)
 
 def main():
     parser = argparse.ArgumentParser(description='Description of your program')
-    parser.add_argument('-m','--mode', help='Train / Run', required=True)
+    parser.add_argument('-m','--mode', help='train / run', required=True)
     parser.add_argument('--training_algorithm', help='What training algorithm to be used for training (e.g., DQN, doubleDQN)', required=True)
     args = vars(parser.parse_args())
+    assert args['mode'] in ('run', 'train')
+    assert args['training_algorithm'] in ('DQN',
+                                          'doubleDQN',
+                                          'DQN+UCB',
+                                          'bootstrappedDQN', 
+                                          'bootstrappedDQN+UCB')
     playGame(args)
 
 if __name__ == "__main__":
