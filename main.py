@@ -77,6 +77,9 @@ def trainNetwork(model, args):
     log_file = open(log_file_name, "w")
     backup = sys.stdout
     sys.stdout = Tee(sys.stdout, log_file)
+
+    # store N_t(a)
+    Nt = np.zeros(ACTIONS)
     
     # open up a game state to communicate with emulator
     game_state = game.GameState()
@@ -87,6 +90,7 @@ def trainNetwork(model, args):
     # get the first state by doing nothing and preprocess the image to 80x80x4
     do_nothing = np.zeros(ACTIONS)
     do_nothing[0] = 1
+    Nt[0] += 1
     x_t, r_0, terminal, curr_score = game_state.frame_step(do_nothing)
 
     x_t = skimage.color.rgb2gray(x_t)
@@ -135,6 +139,7 @@ def trainNetwork(model, args):
                 max_Q = np.argmax(q)
                 action_index = max_Q
                 a_t[max_Q] = 1
+            Nt[action_index] += 1
 
         #We reduced the epsilon gradually
         if epsilon > FINAL_EPSILON and t > OBSERVE:
@@ -186,6 +191,9 @@ def trainNetwork(model, args):
                         Q_target = target_model.predict(state_t1)
                         maxQ_ind = np.argmax(Q_sa,axis = 1)
                         targets[i, action_t] = reward_t + GAMMA * Q_target[0][maxQ_ind]
+                    elif args['training_algorithm'] == "DQN+UCB":
+                        modified_Q_sa = Q_sa+np.sqrt(2*np.log(t)/(Nt))
+                        targets[i, action_t] = reward_t + GAMMA * np.max(modified_Q_sa)
 
             loss += model.train_on_batch(inputs, targets)
 
