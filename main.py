@@ -41,6 +41,7 @@ BATCH = 32 # size of minibatch
 FRAME_PER_ACTION = 1
 LEARNING_RATE = 1e-4
 TARGET_UPDATE = 4000
+BOOTSTRAP_K = 10 # number of bootstrap heads
 
 img_rows , img_cols = 80, 80
 #Convert image into Black and white
@@ -53,8 +54,11 @@ class Tee(object):
         for f in self.files:
             f.write(obj)
 
-def buildmodel():
-    print("Now we build the model")
+def buildmodel(bootstrap_head = None):
+    if bootstrap_head:
+        print("Now we build the model for bootstrap_head = %d" % (bootstrap_head))
+    else:
+        print("Now we build the model")
     model = Sequential()
     model.add(Convolution2D(32, 8, 8, subsample=(4, 4), border_mode='same',input_shape=(img_rows,img_cols,img_channels)))  #80*80*4
     model.add(Activation('relu'))
@@ -110,12 +114,16 @@ def trainNetwork(model, args):
     if args['mode'] == 'Run':
         OBSERVE = 999999999    #We keep observe, never train
         epsilon = FINAL_EPSILON
-        print ("Now we load weight")
-        if os.path.isfile("model.h5"):
-            model.load_weights("model.h5")
-            print ("Weight load successfully")
-        adam = Adam(lr=LEARNING_RATE)
-        model.compile(loss='mse',optimizer=adam)
+        print ("Now we load weights")
+        if args['training_algorithm'] == "bootstrappedDQN":
+            for i in range(BOOTSTRAP_K):
+                if os.path.isfile("model_%d.h5" % (i)):
+                    model[i].load_weights("model_%d.h5" % (i))
+                    print ("Weight for head %d load successfully", (i))
+        else:
+            if os.path.isfile("model.h5"):              
+                model.load_weights("model.h5")
+                print ("Weight load successfully")
     else:                       #We go to training mode
         OBSERVE = OBSERVATION
         epsilon = INITIAL_EPSILON
@@ -128,18 +136,26 @@ def trainNetwork(model, args):
         action_index = 0
         r_t = 0
         a_t = np.zeros([ACTIONS])
-        #choose an action epsilon greedy
+        
         if t % FRAME_PER_ACTION == 0:
-            if random.random() <= epsilon:
-                print("----------Random Action----------")
-                action_index = random.randrange(ACTIONS)
-                a_t[action_index] = 1
-            else:
-                q = model.predict(s_t)       #input a stack of 4 images, get the prediction
+            if args['training_algorithm'] == "bootstrappedDQN":
+                chosen = np.random.randint(BOOTSTRAP_K)
+                q = model[chosen].predict(s_t)
                 max_Q = np.argmax(q)
                 action_index = max_Q
-                a_t[max_Q] = 1
-            Nt[action_index] += 1
+                a_t[action_index] = 1 
+            else:            
+                #choose an action epsilon greedy
+                if random.random() <= epsilon:
+                    print("----------Random Action----------")
+                    action_index = random.randrange(ACTIONS)
+                    a_t[action_index] = 1
+                else:
+                    q = model.predict(s_t)       #input a stack of 4 images, get the prediction
+                    max_Q = np.argmax(q)
+                    action_index = max_Q
+                    a_t[action_index] = 1
+                Nt[action_index] += 1
 
         #We reduced the epsilon gradually
         if epsilon > FINAL_EPSILON and t > OBSERVE:
@@ -156,8 +172,16 @@ def trainNetwork(model, args):
         x_t1 = x_t1.reshape(1, x_t1.shape[0], x_t1.shape[1], 1) #1x80x80x1
         s_t1 = np.append(x_t1, s_t[:, :, :, :3], axis=3)
 
+        #calculate bootstrap mask
+        #the authors use Bernoulli(0.5), but that essentially means
+        #choose with 0.5 probability on each head
+        mask = np.random.choice(2, BOOTSTRAP_K, p=[0.5,]*2)
+
         # store the transition in D
-        D.append((s_t, action_index, r_t, s_t1, terminal))
+        if args['training_algorithm'] == "bootstrappedDQN":
+            D.append((s_t, action_index, r_t, s_t1, terminal, mask))
+        else:
+            D.append((s_t, action_index, r_t, s_t1, terminal))
         if len(D) > REPLAY_MEMORY:
             D.popleft()
 
@@ -177,25 +201,43 @@ def trainNetwork(model, args):
                 reward_t = minibatch[i][2]
                 state_t1 = minibatch[i][3]
                 terminal = minibatch[i][4]
+                if args['training_algorithm'] == "bootstrappedDQN":
+                    mask = minibatch[i][5]
+                
 
                 inputs[i:i + 1] = state_t  #I saved down s_t
-                targets[i] = model.predict(state_t)  #Hitting each buttom probability
+                #Hitting each buttom probability
+                if args['training_algorithm'] == "bootstrappedDQN":
+                    targets[i] = models[chosen].predict(state_t)
+                else:
+                    targets[i] = model.predict(state_t) 
+
 
                 if terminal:
                     targets[i, action_t] = reward_t
                 else:
-                    Q_sa = model.predict(state_t1)
                     if args['training_algorithm'] == "DQN":
+                        Q_sa = model.predict(state_t1)
                         targets[i, action_t] = reward_t + GAMMA * np.max(Q_sa)
                     elif args['training_algorithm'] == "doubleDQN":
+                        Q_sa = model.predict(state_t1)
                         Q_target = target_model.predict(state_t1)
                         maxQ_ind = np.argmax(Q_sa,axis = 1)
                         targets[i, action_t] = reward_t + GAMMA * Q_target[0][maxQ_ind]
                     elif args['training_algorithm'] == "DQN+UCB":
+                        Q_sa = model.predict(state_t1)
                         modified_Q_sa = Q_sa+np.sqrt(2*np.log(t)/(Nt))
                         targets[i, action_t] = reward_t + GAMMA * np.max(modified_Q_sa)
+                    elif args['training_algorithm'] == "bootstrappedDQN":
+                        Q_sa = model[chosen].predict(state_t1)
+                        targets[i, action_t] = reward_t + GAMMA * np.max(Q_sa)
 
-            loss += model.train_on_batch(inputs, targets)
+            if args['training_algorithm'] == "bootstrappedDQN":
+                for idx in range(BOOTSTRAP_K):
+                    if mask[idx] == 1:
+                        loss += model[idx].train_on_batch(inputs, targets)
+            else:
+                loss += model.train_on_batch(inputs, targets)
 
         s_t = s_t1
         t = t + 1
@@ -207,9 +249,15 @@ def trainNetwork(model, args):
         # save progress every 10000 iterations
         if t % 1000 == 0:
             print("Now we save model")
-            model.save_weights("model.h5", overwrite=True)
-            with open("model.json", "w") as outfile:
-                json.dump(model.to_json(), outfile)
+            if args['training_algorithm'] == "bootstrappedDQN":
+                for i in range(BOOTSTRAP_K):
+                    model[i].save_weights("model_%d.h5" % (i), overwrite=True)
+                    with open("model_%d.json" % (i), "w") as outfile:
+                        json.dump(models[i].to_json(), outfile)
+            else:              
+                model.save_weights("model.h5", overwrite=True)
+                with open("model.json", "w") as outfile:
+                    json.dump(model.to_json(), outfile)
 
         # print info
         state = ""
@@ -220,7 +268,7 @@ def trainNetwork(model, args):
         else:
             state = "train"
 
-        printInfo(t, state, epsilon, action_index, r_t, Q_sa, loss)
+        printInfo(t, state, action_index, r_t, Q_sa, loss)
 
         score_file = open("scores","a") 
         score_file.write(str(curr_score)+"\n")
@@ -238,13 +286,16 @@ def trainNetwork(model, args):
     print("Episode finished!")
     print("************************")
 
-def printInfo(t, state, epsilon, action_index, r_t, Q_sa, loss):
+def printInfo(t, state, action_index, r_t, Q_sa, loss):
     print("TIMESTEP", t, "/ STATE", state, \
-          "/ EPSILON", epsilon, "/ ACTION", action_index, "/ REWARD", r_t, \
+          "/ ACTION", action_index, "/ REWARD", r_t, \
           "/ Q_MAX " , np.max(Q_sa), "/ Loss ", loss)
 
 def playGame(args):
-    model = buildmodel()
+    if args['training_algorithm'] == "bootstrappedDQN":
+        model = [buildmodel(i) for i in range(BOOTSTRAP_K)]
+    else:
+        model = buildmodel()
     trainNetwork(model, args)
 
 def main():
