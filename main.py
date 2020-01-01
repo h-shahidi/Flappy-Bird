@@ -144,7 +144,7 @@ def startIteration(model, args):
                 max_Q = np.argmax(q)
                 action_index = max_Q
                 a_t[action_index] = 1
-            else:            
+            else:
                 #choose an action epsilon greedy
                 if random.random() <= epsilon:
                     print("----------Random Action----------")
@@ -208,7 +208,7 @@ def startIteration(model, args):
                 inputs[i:i + 1] = state_t  #I saved down s_t
                 #Hitting each buttom probability
                 if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
-                    targets[i] = models[chosen].predict(state_t)
+                    targets[i] = model[chosen].predict(state_t)
                 else:
                     targets[i] = model.predict(state_t) 
 
