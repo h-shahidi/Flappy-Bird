@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# Asynchronous one-step Q-learning from https://arxiv.org/pdf/1602.01783.pdf 
+
 from __future__ import print_function
 
 import sys
@@ -19,7 +21,6 @@ from keras import backend as K
 import random
 import copy
 import threading
-#from environment import Env
 import time
 import tensorflow as tf
 import numpy as np
@@ -51,7 +52,6 @@ ACTIONS = 2 # number of valid actions
 T = 0
 TMAX = FLAGS.tmax
 
-# https://stackoverflow.com/questions/17866724/python-logging-print-statements-while-having-them-print-to-stdout
 class Tee(object):
     def __init__(self, *files):
         self.files = files
@@ -72,16 +72,13 @@ def create_model(num_actions, agent_history_length, resized_width, resized_heigh
         m = Model(input=inputs, output=q_values)
     return state, m
 
-class DQN:
-    
-    def __init__(self, num_actions):
-        
+
+class DQN:    
+    def __init__(self, num_actions):        
         self.TMAX = TMAX
         self.T = 0
-        print ("start object")
         g = tf.Graph()
-        with g.as_default(), tf.Session() as self.session:
-            
+        with g.as_default(), tf.Session() as self.session:            
             K.set_session(self.session)
             self.create_operations(num_actions)
             self.saver = tf.train.Saver()
@@ -91,18 +88,13 @@ class DQN:
             backup = sys.stdout
             sys.stdout = Tee(sys.stdout, log_file)
 
-
-        # episodes global counters
-        
             if FLAGS.testing:
                 self.test(num_actions)
             else:
                 self.train(num_actions)
-
         
                 
     def create_operations(self, num_actions):
-
         # create model and state
         self.state, self.model = create_model(num_actions, FLAGS.history_length, FLAGS.width, FLAGS.height)
 
@@ -118,14 +110,11 @@ class DQN:
         # operation for q values
         self.q_values = self.model(self.state)
          
-        # operation for q values of target mdoel
+        # operation for q values of the target mdoel
         self.target_q_values = self.target_model(self.new_state)
 
-        # operation for updating target's parameters
+        # operation for updating the target network's parameters
         self.update_target = [self.target_model_params[i].assign(self.model_params[i]) for i in range(len(self.target_model_params))]
-
-        print ("creating operations")
-        # operations for training model
 
         # placeholder for actions
         self.actions = tf.placeholder("float", [None, num_actions])
@@ -133,10 +122,10 @@ class DQN:
         # placeholder for targets
         self.targets = tf.placeholder("float", [None])
 
-        # multiple q values with actions. actions is an array with all zeros
-        # except the value of the action which executed.
-        # so action_q_values has only the qvalue with the same index
-        # as the action that executed
+        # multiple q values with actions, `actions` is an array with all zeros
+        # except the value of the action which has been executed.
+        # So `action_q_values` has only the qvalue with the same index
+        # as the action that has been executed
         action_q_values = tf.reduce_sum(tf.multiply(self.q_values, self.actions), reduction_indices=1)
 
         # define cost
@@ -145,23 +134,19 @@ class DQN:
         # define variable learning rate
         self.learning_rate = tf.placeholder(tf.float32, shape=[])
         
-        # define optimazation method
+        # define optimization method
         optimizer = tf.train.RMSPropOptimizer(self.learning_rate, decay=FLAGS.decay)
 
-        # define traininf function
+        # define training operation
         self.grad_update = optimizer.minimize(cost, var_list=self.model_params)
 
 
     def sample_final_epsilon(self):
         possible_epsilon = [0.1]*4 + [0.5]*3 + [0.01]*3
         return random.choice(possible_epsilon)
-    
-    def actor_learner_thread(self, game_state, thread_id, num_actions):
 
-        # create instance of Doom environment
-        #env = Env(env, FLAGS.width, FLAGS.height, FLAGS.history_length, FLAGS.game_type)
-        #game_state = game.GameState()
-        # Initialize network gradients
+
+    def actor_learner_thread(self, game_state, thread_id, num_actions):
         states = []
         actions = []
         targets = []
@@ -176,19 +161,14 @@ class DQN:
 
         do_nothing = np.zeros(ACTIONS)
         do_nothing[0] = 1
-        x_t1_colored, r_0, terminal = game_state.frame_step(do_nothing)
+        x_t1_colored, r_0, terminal, cur_score = game_state.frame_step(do_nothing)
         x_t1 = skimage.color.rgb2gray(x_t1_colored)
-        x_t = skimage.transform.resize(x_t1,(80,80))
-        s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
-        state= s_t.reshape(s_t.shape[0], s_t.shape[1], s_t.shape[2])  #1*80*80*4
-        while self.T < self.TMAX:
-        
-            # Get initial game observation
-            #state = env.get_initial_state()
-            
-            done = False
+        x_t1 = skimage.transform.resize(x_t1,(80,80))
+        state = np.stack((x_t1, x_t1, x_t1, x_t1), axis=2)
+        state = state.reshape(state.shape[0], state.shape[1], state.shape[2])  #shape(1,80,80,4)
 
-            # episode's counter
+        while self.T < self.TMAX:
+            done = False
             episode_reward = 0
             mean_q = 0
             frames = 0
@@ -199,8 +179,7 @@ class DQN:
 
                 # define list of actions. All values are zeros except , the
                 # value of action that is executed
-                action_list = np.zeros([num_actions])
-
+                action = np.zeros([num_actions])
                 action_index = 0
 
                 # chose action based on current policy
@@ -208,7 +187,7 @@ class DQN:
                     action_index = random.randrange(num_actions)
                 else:
                     action_index = np.argmax(q_values)
-                action_list[action_index] = 1
+                action[action_index] = 1
 
                 # reduce epsilon
                 if epsilon > final_epsilon:
@@ -217,23 +196,15 @@ class DQN:
                 # decrease learning rate
                 if self.lr > 0:
                     self.lr -= FLAGS.learning_rate / self.TMAX
-                    
-                # Gym excecutes action in game environment on behalf of actor-learner
-                #new_state, reward, done = env.step(action_index)
-
-                a_t = np.zeros([ACTIONS])
-                a_t[action_index] = 1
                 
                 self.threadLock.acquire()
-                x_t1_colored, reward, done = game_state.frame_step(a_t)
+                x_t1_colored, reward, done, cur_score = game_state.frame_step(action)
                 self.threadLock.release()
                 
                 x_t1 = skimage.color.rgb2gray(x_t1_colored)
                 x_t1 = skimage.transform.resize(x_t1,(80,80))
-               # x_t1 = skimage.exposure.rescale_intensity(x_t1, out_range=(0, 255))
-
-                x_t1 = x_t1.reshape( x_t1.shape[0], x_t1.shape[1], 1) #1x80x80x1
-                new_state = np.append(x_t1, state[ :, :, :3], axis=2)
+                x_t1 = x_t1.reshape(x_t1.shape[0], x_t1.shape[1], 1) #shape(1,80,80,1)
+                new_state = np.append(x_t1, state[:, :, :3], axis=2)
 
                 # forward pass of target network. Get Q(s',a)
                 target_q_values = self.target_q_values.eval(session = self.session, feed_dict = {self.new_state : [new_state]})
@@ -241,14 +212,14 @@ class DQN:
                 # clip reward to -1, 1
                 clipped_reward = np.clip(reward, -1, 1)
 
-                #compute targets based on Q-learning update rule
+                # compute targets based on Q-learning update rule
                 # targets = r + gamma*max(Q(s',a))                
                 if done:
                     targets.append(clipped_reward)
                 else:
                     targets.append(clipped_reward + FLAGS.gamma * np.max(target_q_values))
     
-                actions.append(action_list)
+                actions.append(action)
                 states.append(state)
     
                 # Update the state and global counters
@@ -260,9 +231,8 @@ class DQN:
                 frames += 1
                 episode_reward += reward
                 mean_q += np.max(q_values)
-
-                
-                # update_target_network
+               
+                # update target network
                 if self.T % FLAGS.target_network_update_frequency == 0:
                     self.session.run(self.update_target)
     
@@ -270,9 +240,9 @@ class DQN:
                 if t % FLAGS.network_update_frequency == 0 or done:
                     if states:
                         self.session.run(self.grad_update, feed_dict = {self.state : states,
-                                                          self.actions : actions,
-                                                          self.targets :targets,
-                                                          self.learning_rate: self.lr})
+                                                                        self.actions : actions,
+                                                                        self.targets : targets,
+                                                                        self.learning_rate: self.lr})
                     # Clear gradients
                     states = []
                     actions = []
@@ -292,24 +262,17 @@ class DQN:
                     break
 
 
-
-
-
     def train(self, num_actions):
-
         # Initialize target network weights
         # Initialize all variables
         init_op = tf.global_variables_initializer()
         self.session.run(init_op)
         self.session.run(self.update_target)
 
-        # inititalize learning rate
+        # Inititalize learning rate
         self.lr = FLAGS.learning_rate
         
         self.threadLock = threading.Lock()
-        # Set up game environments (one per thread)
-        #envs = [gym.make(FLAGS.game) for i in range(FLAGS.num_concurrent)]
-        #envs = [game_state = game.GameState() for i in range(FLAGS.num_concurrent)]
         game_states = [game.GameState() for i in range(FLAGS.num_concurrent)]
 
         if not os.path.exists(FLAGS.checkpoint_dir):
@@ -317,76 +280,50 @@ class DQN:
         # Initialize variables
         self.session.run(tf.initialize_all_variables())
 
-
         # Start num_concurrent actor-learner training threads
         actor_learner_threads = [threading.Thread(target=self.actor_learner_thread, args=(game_states[thread_id], thread_id, num_actions)) for thread_id in range(FLAGS.num_concurrent)]
         for t in actor_learner_threads:
             t.start()
 
-        # Show the agents training and write summary statistics
-        #while True:
-        #    if FLAGS.show_training:
-        #        for env in envs:
-        #            env.render()
-        
         for t in actor_learner_threads:
             t.join() 
-    
+
+
     def test(self, num_actions):
         self.saver.restore(self.session, FLAGS.checkpoint_path)
         print ("Restored model weights from ", FLAGS.checkpoint_path)
-        #monitor_env = gym.make(FLAGS.game)
-        #monitor_env.monitor.start("/tmp/" + FLAGS.game ,force=True)
-        #env = Env(env, FLAGS.width, FLAGS.height, FLAGS.history_length, FLAGS.game_type)
+
         game_state = game.GameState()
         do_nothing = np.zeros(ACTIONS)
         do_nothing[0] = 1
         x_t1_colored, r_0, terminal = game_state.frame_step(do_nothing)
         x_t1 = skimage.color.rgb2gray(x_t1_colored)
-        x_t = skimage.transform.resize(x_t1,(80,80))
-        s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
-        #print (s_t.shape)
-
-        #In Keras, need to reshape
-        state= s_t.reshape( s_t.shape[0], s_t.shape[1], s_t.shape[2])  #1*80*80*4
+        x_t1 = skimage.transform.resize(x_t1,(80,80))
+        state = np.stack((x_t1, x_t1, x_t1, x_t1), axis=2)
+        state = state.reshape(state.shape[0], state.shape[1], state.shape[2])  #shape(1,80,80,4)
 
         for i_episode in xrange(FLAGS.num_eval_episodes):
-            #state = env.get_initial_state()
-
             episode_reward = 0
             done = False
             while not done:
-                #monitor_env.render()
                 q_values = self.q_values.eval(session = self.session, feed_dict = {self.state : [state]})
                 action_index = np.argmax(q_values)
-                #new_state, reward, done = env.step(action_index)
-                a_t = np.zeros([ACTIONS])
-                a_t[action_index] = 1
-                x_t1_colored, reward, done = game_state.frame_step(a_t)
+                action = np.zeros([num_actions])
+                action[action_index] = 1
+                x_t1_colored, reward, done = game_state.frame_step(action)
                 x_t1 = skimage.color.rgb2gray(x_t1_colored)
                 x_t1 = skimage.transform.resize(x_t1,(80,80))
-               # x_t1 = skimage.exposure.rescale_intensity(x_t1, out_range=(0, 255))
-
-                x_t1 = x_t1.reshape(1, x_t1.shape[0], x_t1.shape[1], 1) #1x80x80x1
-                new_state = np.append(x_t1, state[ :, :, :3], axis=2)
+                x_t1 = x_t1.reshape(1, x_t1.shape[0], x_t1.shape[1], 1)  #shape(1,80,80,1)
+                new_state = np.append(x_t1, state[:, :, :3], axis=2)
 
                 state = new_state
                 episode_reward += reward
             print ("Finished episode " + str(i_episode + 1) + " with score " + str(episode_reward))
         
-        #monitor_env.monitor.close()
-
-def get_num_actions():
-    #env = gym.make(FLAGS.game)
-    #env = Env(env, FLAGS.width, FLAGS.height, FLAGS.history_length, FLAGS.game_type)
-    #num_actions = len(env.gym_actions)
-    num_actions = ACTIONS
-    return num_actions
 
 def main():
+    DQN(ACTIONS)
 
-    num_actions = get_num_actions()
-    DQN(num_actions)
 
 if __name__ == "__main__":
     main()
