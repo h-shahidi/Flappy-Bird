@@ -134,7 +134,7 @@ def startIteration(model, args):
         loss = 0
         Q_sa = 0
         action_index = 0
-        r_t = 0
+        r_t1 = 0
         a_t = np.zeros([ACTIONS])
         
         if t % FRAME_PER_ACTION == 0:
@@ -162,7 +162,7 @@ def startIteration(model, args):
             epsilon -= (INITIAL_EPSILON - FINAL_EPSILON) / EXPLORE
 
         #run the selected action and observed next state and reward
-        x_t1_colored, r_t, terminal, curr_score = game_state.frame_step(a_t)
+        x_t1_colored, r_t1, terminal, curr_score = game_state.frame_step(a_t)
         terminal_check = terminal
 
         x_t1 = skimage.color.rgb2gray(x_t1_colored)
@@ -179,9 +179,9 @@ def startIteration(model, args):
 
         # store the transition in D
         if args['training_algorithm'] in ("bootstrappedDQN", "bootstrappedDQN+UCB"):
-            D.append((s_t, action_index, r_t, s_t1, terminal, mask))
+            D.append((s_t, action_index, r_t1, s_t1, terminal, mask))
         else:
-            D.append((s_t, action_index, r_t, s_t1, terminal))
+            D.append((s_t, action_index, r_t1, s_t1, terminal))
         if len(D) > REPLAY_MEMORY:
             D.popleft()
 
@@ -272,7 +272,7 @@ def startIteration(model, args):
         else:
             state = "train"
 
-        printInfo(t, state, action_index, r_t, Q_sa, loss)
+        printInfo(t, state, action_index, r_t1, Q_sa, loss)
 
         score_file = open("scores","a") 
         score_file.write(str(curr_score)+"\n")
@@ -285,14 +285,14 @@ def startIteration(model, args):
             out_file.close()
             total_reward = 0
         else:
-            total_reward = total_reward + r_t
+            total_reward = total_reward + r_t1
 
     print("Episode finished!")
     print("************************")
 
-def printInfo(t, state, action_index, r_t, Q_sa, loss):
+def printInfo(t, state, action_index, r_t1, Q_sa, loss):
     print("TIMESTEP", t, "/ STATE", state, \
-          "/ ACTION", action_index, "/ REWARD", r_t, \
+          "/ ACTION", action_index, "/ REWARD", r_t1, \
           "/ Q_MAX " , np.max(Q_sa), "/ Loss ", loss)
 
 def playGame(args):
